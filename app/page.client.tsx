@@ -69,7 +69,11 @@ const ACHIEVEMENT_LIST = [
   { id: '4', title: 'Veteran', desc: 'Play 50 games', req: (s: GameStats) => s.gamesPlayed >= 50, icon: <Trophy className="text-blue-400"/> },
   { id: '5', title: 'Combo King', desc: 'Reach 50x Combo', req: (s: GameStats) => s.maxCombo >= 50, icon: <Flame className="text-orange-500"/> },
 ];
-
+const playSound = (src: string, volume: number) => {
+  const audio = new Audio(src);
+  audio.volume = volume;
+  audio.play().catch(() => {}); // Catch zapobiega błędom, gdy user jeszcze nie kliknął na stronę
+};
 // --- MAIN COMPONENT ---
 export default function UltraTypeEngineV6() {
   // Accounts & Profiles
@@ -133,8 +137,8 @@ const [activeProfileId, setActiveProfileId] = useState<string>(() => {
   // Config
   const [settings, setSettings] = useState<GameSettings>({
     speed: 0.25,
-    spawnRate: 1000,
-    fontSize: 40,
+    spawnRate: 2000,
+    fontSize: 70,
     volume: 0.3
   });
 
@@ -288,14 +292,31 @@ const [activeProfileId, setActiveProfileId] = useState<string>(() => {
 
 // 2. Usuń score, combo, shields z zależności, używając aktualizacji funkcyjnych
 
+// 1. Stwórz Refy, które będą zawsze trzymać aktualne wartości bez przebudowywania funkcji
+const statsRef = useRef({ score: 0, combo: 0 });
+const settingsRef = useRef(settings);
+
+// 2. Synchronizuj Refy z aktualnym stanem
+useEffect(() => {
+  statsRef.current = { score, combo };
+
+}, [score, combo]);
+
+useEffect(() => {
+  settingsRef.current = settings;
+}, [settings]);
+
 const engineUpdate = useCallback((time: number) => {
   if (gameState !== 'playing') {
     setHeat(h => Math.max(0, h - 0.2));
     return;
   }
 
+  // Używamy Refa zamiast stanu bezpośrednio, aby uniknąć zależności
+
+
   // SPAWN LOGIC
-  if (time - lastSpawnRef.current > settings.spawnRate) {
+  if (time - lastSpawnRef.current > settingsRef.current.spawnRate) {
     spawnItem();
     lastSpawnRef.current = time;
   }
@@ -304,7 +325,7 @@ const engineUpdate = useCallback((time: number) => {
   let missed = false;
 
   itemsRef.current.forEach(it => {
-    it.y += settings.speed;
+    it.y += settingsRef.current.speed;
     if (it.y > 100) {
       if (it.type === 'normal') missed = true;
     } else {
@@ -315,30 +336,34 @@ const engineUpdate = useCallback((time: number) => {
   itemsRef.current = nextItems;
   setItems([...nextItems]);
 
-  if (missed) {
-    if(showSettingsDropdown) return 0;
+  if (missed) {  if(showSettingsDropdown) return 0;
     setScreenFlash(true);
     setTimeout(() => setScreenFlash(false), 100);
-
+  playSound('https://assets.mixkit.co/active_storage/sfx/210/210-preview.mp3', settingsRef.current.volume);
     setShields(prevShields => {
       if (prevShields > 0) return prevShields - 1;
 
       setLives(l => {
         if (l <= 1) { 
           setGameState('gameover'); 
-          
+            playSound('https://assets.mixkit.co/active_storage/sfx/2042/2042-preview.mp3', settingsRef.current.volume);
           if (activeProfile) {
+            // Pobieramy wartości z Refa w krytycznym momencie Game Over
+            const finalScore = statsRef.current.score;
+            const finalCombo = statsRef.current.combo;
 
-            saveToRanking(score); 
+            saveToRanking(finalScore); 
             updateActiveStats({ 
-              totalScore: activeProfile.stats.totalScore + score,
+              totalScore: activeProfile.stats.totalScore + finalScore,
               gamesPlayed: activeProfile.stats.gamesPlayed + 1,
-              maxCombo: Math.max(activeProfile.stats.maxCombo, combo)
-            }, score * XP_PER_SCORE);
+              maxCombo: Math.max(activeProfile.stats.maxCombo, finalCombo)
+            }, finalScore * XP_PER_SCORE);
           }
           return 0; 
         }
-        return l - 1;
+
+      
+        return l - 0.5;
       });
       return 0;
     });
@@ -349,21 +374,15 @@ const engineUpdate = useCallback((time: number) => {
 
   setHeat(h => Math.max(0, h - 0.2));
   
-  // TABLICA ZALEŻNOŚCI: 
-  // Dodajemy saveToRanking (którego brakowało).
-  // score i combo są tu potrzebne tylko w momencie 'gameover', 
-  // co jest problematyczne dla wydajności pętli.
 }, [
   gameState, 
-  settings.spawnRate, 
-  settings.speed, 
   spawnItem, 
   activeProfile, 
   updateActiveStats, 
-  saveToRanking, // Ten brak powodował błąd
-  score, 
-  combo,
+  saveToRanking,
   showSettingsDropdown
+  // ZAUWAŻ: score, combo i settings zostały usunięte z zależności!
+  // Silnik nie będzie się restartował przy każdym punkcie.
 ]);
   useEffect(() => {
     const tick = (time: number) => {
@@ -380,9 +399,9 @@ const engineUpdate = useCallback((time: number) => {
       if (gameState !== 'playing' || isOverheated || showSettingsDropdown) return;
       const key = e.key.toUpperCase();
       const idx = itemsRef.current.findIndex(it => it.char === key);
-
       if (idx !== -1) {
         const item = itemsRef.current[idx];
+        
         if (item.type === 'bomb') {
           setLives(l => Math.max(0, l - 1));
           setHeat(100); setIsOverheated(true);
@@ -391,12 +410,14 @@ const engineUpdate = useCallback((time: number) => {
         } else if (item.type === 'heart') {
           setLives(l => Math.min(5, l + 1));
           if (activeProfile) updateActiveStats({ heartsCollected: activeProfile.stats.heartsCollected + 1 });
+            playSound('https://assets.mixkit.co/active_storage/sfx/2058/2058-preview.mp3', settings.volume);
         } else {
           const points = Math.floor(10 * multiplier);
           setScore(s => s + points);
           setMoney(m => m + 2);
           setMultiplier(m => Math.min(10, m + 0.05));
           setCombo(c => c + 1);
+          playSound('https://assets.mixkit.co/active_storage/sfx/2533/2533-preview.mp3', settings.volume);
         }
         itemsRef.current.splice(idx, 1);
       } else {
@@ -548,6 +569,7 @@ const engineUpdate = useCallback((time: number) => {
         <motion.div 
           initial={{ x: 100, opacity: 0 }} animate={{ x: 0, opacity: 1 }}
           className="absolute right-10 top-1/2 -translate-y-1/2 z-50 text-right"
+          onViewportEnter={()=>  playSound('https://assets.mixkit.co/active_storage/sfx/2021/2021-preview.mp3', settingsRef.current.volume)}
         >
           <p className="text-xl font-bold text-orange-500 uppercase italic">Combo</p>
           <p className="text-8xl font-black italic leading-none">{combo}x</p>
@@ -613,8 +635,8 @@ const engineUpdate = useCallback((time: number) => {
                   >
                     <p className="text-xs font-black mb-6 uppercase tracking-widest text-blue-500">Engine Tuning</p>
                     <div className="space-y-6">
-                      <Slider label="Gravity" val={settings.speed} min={0.1} max={0.8} step={0.01} onChange={(v: number) => setSettings({...settings, speed: v})} />
-                      <Slider label="Intensity" val={settings.spawnRate} min={200} max={2000} step={50} invert onChange={(v: number) => setSettings({...settings, spawnRate: v})} />
+                      <Slider label="Gravity" val={settings.speed} min={0.05} max={0.8} step={0.01} onChange={(v: number) => setSettings({...settings, speed: v})} />
+                      <Slider label="Intensity" val={settings.spawnRate} min={1200} max={5000} step={50} invert onChange={(v: number) => setSettings({...settings, spawnRate: v})} />
                       <Slider label="Char Size" val={settings.fontSize} min={20} max={80} step={2} onChange={(v: number) => setSettings({...settings, fontSize: v})} />
                     </div>
                   </motion.div>
@@ -703,28 +725,57 @@ const engineUpdate = useCallback((time: number) => {
                 </button>
               </div>
 
-              <div className="grid grid-cols-2 gap-6">
-                {profiles.map(p => (
-                  <div 
-                    key={p.id}
-                    onClick={() => [setActiveProfileId(p.id),location.reload()]}
-                    className={`p-8 rounded-[40px] border-4 transition-all cursor-pointer flex items-center justify-between ${
-                      activeProfileId === p.id ? 'border-blue-600 bg-blue-600/10' : 'border-transparent ' + theme.card
-                    }`}
-                  >
-                    <div className="flex items-center gap-6">
-                      <div className={`w-16 h-16 rounded-3xl flex items-center justify-center font-black text-2xl ${activeProfileId === p.id ? 'bg-blue-600 text-white' : 'bg-slate-500/20'}`}>
-                        {p.name[0]}
-                      </div>
-                      <div>
-                        <p className="text-2xl font-black">{p.name}</p>
-                        <p className="text-xs font-bold text-blue-500 uppercase tracking-widest">Poziom {p.level}</p>
-                      </div>
-                    </div>
-                    {activeProfileId === p.id && <div className="px-4 py-2 bg-blue-600 text-white text-[10px] font-black rounded-full uppercase">Aktywny</div>}
-                  </div>
-                ))}
-              </div>
+      
+        <div className="grid grid-cols-2 gap-6">
+  {profiles.map(p => (
+    <div 
+      key={p.id}
+      onClick={() => {
+        // Zmieniamy tylko jeśli to nie jest obecny profil
+        if (activeProfileId !== p.id) {
+          setActiveProfileId(p.id);
+          location.reload();
+        }
+      }}
+      className={`p-8 rounded-[40px] border-4 transition-all cursor-pointer flex items-center justify-between group ${
+        activeProfileId === p.id ? 'border-blue-600 bg-blue-600/10' : 'border-transparent ' + theme.card
+      }`}
+    >
+      <div className="flex items-center gap-6">
+        <div className={`w-16 h-16 rounded-3xl flex items-center justify-center font-black text-2xl ${activeProfileId === p.id ? 'bg-blue-600 text-white' : 'bg-slate-500/20'}`}>
+          {p.name[0]}
+        </div>
+        <div>
+          <p className="text-2xl font-black">{p.name}</p>
+          <p className="text-xs font-bold text-blue-500 uppercase tracking-widest">Poziom {p.level}</p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3">
+        {activeProfileId === p.id ? (
+          <div className="px-4 py-2 bg-blue-600 text-white text-[10px] font-black rounded-full uppercase">Aktywny</div>
+        ) : (
+          /* Przycisk usuwania - widoczny po najechaniu (hover) na kartę */
+          <button 
+            onClick={(e) => {
+              e.stopPropagation(); // Ważne: zapobiega przełączeniu profilu przy usuwaniu
+              if (profiles.length <= 1) {
+                alert("Nie można usunąć ostatniego operatora w systemie.");
+                return;
+              }
+              if (confirm(`Czy na pewno chcesz bezpowrotnie usunąć profil ${p.name}?`)) {
+                setProfiles(profiles.filter(pr => pr.id !== p.id));
+              }
+            }}
+            className="p-4 bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white rounded-2xl transition-all opacity-0 group-hover:opacity-100"
+          >
+            <Trash2 size={20} />
+          </button>
+        )}
+      </div>
+    </div>
+  ))}
+</div>
             </div>
           </Overlay>
         )}
@@ -859,14 +910,38 @@ function Overlay({ children, onClose }: { children: React.ReactNode, onClose?: (
   return (
     <motion.div 
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      className="absolute inset-0 z-100 bg-white/60 dark:bg-black/90 backdrop-blur-2xl flex items-center justify-center p-8"
+      className={`absolute inset-0 z-100 bg-white/60 dark:bg-black backdrop-blur-2xl flex items-center justify-center p-8`}
     >
       <div className="relative w-full h-full flex items-center justify-center">
         {onClose && (
-          <button onClick={onClose} className="absolute top-4 right-4 p-4 hover:bg-white/10 rounded-full transition-colors text-black dark:text-white ">
-            <X size={32} />
-          </button>
-        )}
+  <motion.button
+    onClick={onClose}
+    whileHover={{ scale: 1.1, rotate: 90 }}
+    whileTap={{ scale: 0.9 }}
+    initial={{ opacity: 0, x: 20 }}
+    animate={{ opacity: 1, x: 0 }}
+    className="absolute top-8 right-8 z-[160] group hover:cursor-pointer"
+  >
+    {/* Efekt poświaty w tle */}
+    <div className="absolute inset-0 bg-red-500/20 blur-xl rounded-full scale-0 group-hover:scale-150 transition-transform duration-500" />
+    
+    <div className="relative p-5 bg-white/5 dark:bg-white/10 backdrop-blur-md border border-white/20 rounded-full text-black dark:text-white shadow-xl flex items-center justify-center overflow-hidden">
+      {/* Ruchomy pasek (shine effect) */}
+      <motion.div 
+        className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full"
+        animate={{ x: ['100%', '-100%'] }}
+        transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+      />
+      
+      <X size={28} strokeWidth={3} className="group-hover:text-red-500 transition-colors" />
+    </div>
+    
+    {/* Napis "ESC" pod przyciskiem - fajny detal gamingowy */}
+    <span className="absolute -bottom-6 left-1/2 -translate-x-1/2 text-[10px] font-black opacity-0 group-hover:opacity-100 transition-opacity uppercase tracking-widest text-slate-500">
+      Close
+    </span>
+  </motion.button>
+)}
         {children}
       </div>
     </motion.div>
