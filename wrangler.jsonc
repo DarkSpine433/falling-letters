@@ -1,5 +1,5 @@
 {
-  "name": "falling-numbers",
+  "name": "spadajace-litery",
   "compatibility_date": "2026-01-18",
   "assets": {
     "directory": "./out" // lub "./.next" w zależności od konfiguracji
